@@ -1,0 +1,50 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[colorlinks=true,urlcolor=blue,linkcolor=blue,breaklinks]{hyperref}
+
+\newcommand{\outputfolderurl}{https://drive.google.com/file/d/1AYIOAi2KbQZFTtyYwyYcQw4gm_CQTT_h/view?usp=sharing}
+
+\title{AI 620 --- Assignment 4\\Short report (PySpark batch pipeline)}
+\author{Roll no.\ 25280044\\[0.6em]
+\small Output/Result folder: \href{\outputfolderurl}{\underline{Google Drive (click to open)}}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section*{What this is}
+I ran everything in Google Colab. The notebook has the code plus short markdown answers where the handout asked for explanations. Data is clickstream JSON and IoT CSV under \texttt{data/}; Parquet/CSV outputs from the runs are here: \href{\outputfolderurl}{\underline{Google Drive outputs}} (same link as on the title page). Locally they would live under \texttt{output/}.
+
+\section*{Setup}
+Colab installs PySpark with pip. I work in \texttt{/content/DE\_Assignment\_4} and mounted Drive once to keep files between sessions. Spark is \texttt{local[*]} with AQE turned on in the session builder (same idea as the bonus section at the end).
+
+\section*{Part 1 --- schemas}
+I read clickstream JSON without a schema and printed the inferred one. For the write-up I noted why inference is risky in production (wrong types, schema drift). Then I defined the \texttt{StructType} from the assignment and read JSON again so \texttt{event\_ts} is a real timestamp and \texttt{page\_data} matches the nested fields.
+
+For IoT I used \texttt{PERMISSIVE} and \texttt{\_corrupt\_record}. On Spark~4 the corrupt column sometimes does not appear at all when every row parses cleanly, so I check column names first; otherwise the filter would error. Count was zero on the synthetic CSV, clean count matched the file size.
+
+\section*{Part 2 --- cleaning}
+Clickstream: flatten \texttt{page\_data}, drop bots (\texttt{time\_spent} $>300$), \texttt{date\_trunc} to \texttt{event\_hour}, cache the frame because later parts reuse it.
+
+IoT: Celsius to Fahrenheit, status buckets (CRITICAL / WARNING / NORMAL), \texttt{repartition(8)}. The CSV has no time column; I faked \texttt{reading\_ts} in 5-minute steps per warehouse so the rolling window in Part~3.2 matches the handout.
+
+\section*{Part 3 --- windows}
+Sessions: \texttt{lag} by user, gap in minutes, flag when gap $>10$ or first row, cumulative sum for \texttt{session\_id}, then aggregates for duration and click count.
+
+Anomaly: bucket timestamps in 5-minute units, \texttt{rangeBetween(-12,0)} for about an hour, rolling mean and std, flag if temp is more than three sigmas above the mean. I used \texttt{stddev} not population std because that is what Spark exposes for rolling stats here.
+
+\section*{Part 4 and 5}
+Broadcast join against a 100-row region lookup using \texttt{hint("broadcast")}. Wrote cleaned clickstream parquet partitioned by \texttt{event\_hour}, read one hour back, \texttt{explain(mode="extended")} for pruning (Spark~4 does not accept the old \texttt{explain(true)} string anymore).
+
+Sessionized clicks got \texttt{event\_date}, append parquet by date. Anomalies exported with \texttt{coalesce(1)} to one CSV as required.
+
+\section*{Stuff that tripped me up}
+\begin{itemize}
+  \item No \texttt{\_corrupt\_record} column until there is actually a bad line, on newer Spark.
+  \item \texttt{explain(mode="true")} is invalid; use \texttt{extended} or \texttt{formatted}.
+\end{itemize}
+
+\section*{Bottom line}
+All parts from the PDF are in the notebook with prints / plans where asked. If the TA wants to see corrupt handling explicitly, append one malformed CSV line and rerun Part~1.3.
+
+\end{document}
